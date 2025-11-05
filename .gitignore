@@ -1,0 +1,25 @@
+# Data and large artifacts
+/data/
+/data/**
+/results/
+/results/**
+/outputs/
+/logs/
+/checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.env
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors/OS
+.DS_Store
+.idea/
+.vscode/

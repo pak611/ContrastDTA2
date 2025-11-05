@@ -1,0 +1,118 @@
+
+----------------------------Embedding Modules----------------------------
+
+-These should be trained in the loop
+
+# Ligand Embedding Module
+Smiles -> PDB -> atom type + coordinates -> save files
+
+# Protein Embedding Module
+Sequence --BLAST-> PDB -> residue type + coordinates -> saved files
+
+# Pocket Embedding Module
+Sequence --BLAST-> PDB --fpocket-> PDB (extracted) -> residue type + coordinates -> saved files
+
+
+
+----------------------------------Model---------------------------------- 
+
+High-level goal: learn aligned ligand/protein (or pocket) representations via contrastive learning, optionally enhanced with cross-attention. Start simple, then add geometry.
+
+Phased plan:
+1) MVP (sequence + 2D graph)
+	 - Ligand encoder: simple GNN (GIN/MPNN/GraphConv, 2–5 layers). Node feats: atom type, aromaticity, valence; edges: bond type. Pool with mean or [CLS].
+	 - Protein encoder: sequence-based (ESM2 small variant) followed by a small Transformer encoder (2–4 layers) to adapt. Pool with [CLS] or mean.
+	 - Pocket (optional at MVP): if pocket PDB already extracted, encode with a light residue-graph GNN using only distances; otherwise skip at MVP and add in phase 3.
+	 - Projection heads: MLPs mapping each modality to a shared d_model (and L2-normalize).
+	 - Contrastive objective: symmetric InfoNCE with temperature τ (batch negatives).
+
+2) Add cross-attention (interaction modeling)
+	 - Add 1–2 cross-attention blocks: Q from ligand, K/V from protein (and optionally the reverse). Use masks for variable lengths.
+	 - Keep per-modality encoders; cross-attended outputs are pooled to global vectors.
+
+3) Introduce pockets / 3D (geometric signal)
+	 - Pocket extraction: run fpocket on ColabFold/BLAST-derived PDBs; build a residue graph centered on pocket (radius r: 8–12 Å).
+	 - Pocket encoder options:
+		 a) Non-equivariant GNN with distance/direction features (simpler, faster).
+		 b) 3D equivariant GNN (EGNN/SE(3)-Transformer/TorchMD-NET) on residue/atom graphs for rotationally robust features.
+	 - Fall back to sequence-only when structure/pocket is unavailable.
+
+4) Optional supervised DTA head
+	 - On top of pooled or cross-attended features, add a regression head for affinity. Train with λ·InfoNCE + (1−λ)·MSE.
+
+Contrastive loss (InfoNCE):
+- For batch size B, similarities S = z_l · z_p^T with normalized projections.
+- Symmetric formulation with temperature τ:
+	L = -(1/2B) * sum_i [ log exp(S_ii/τ) / sum_j exp(S_ij/τ) + log exp(S_ii/τ) / sum_j exp(S_ji/τ) ]
+
+Implementation details and conventions:
+- Shapes per sample: hidden sequences are [L', d_model] (L' = L or L+1 if [CLS] used). Pooled vectors are [d_model].
+- Pooling: prefer [CLS] for stability with cross-attention; mean pooling is a solid baseline for regression.
+- Masks: Bool masks (True = padding) used both in attention and in pooling (exclude pads from mean; set to -inf for max).
+- Projection heads: 1–2 layer MLPs with nonlinearity (e.g., GELU) and final normalization; keep d_proj (e.g., 256–512) modest for throughput.
+- Temperature τ: learnable scalar initialized around 0.07–0.1; clamps for stability.
+
+Featurization notes:
+- Ligand
+	- RDKit: sanitize, standardize (tautomer/protonation), add hydrogens if generating 3D.
+	- Graph: atom features (element, degree, formal charge, aromatic), bond type; optional 3D coords (ETKDG) cached.
+- Protein / Pocket
+	- Sequence route: ESM2 (t6_8M or t12_35M) embeddings; adapt with a small Transformer; truncate/stride for very long sequences.
+	- Pocket route: residue graph within radius r; node feats: residue type one-hot + optional DSSP; edge feats: distances and (optionally) directional encodings.
+
+Edge cases / safeguards:
+- Missing structure or fpocket failure → fall back to sequence-only encoder.
+- Very long proteins → use smaller ESM2, chunking, or downsampled tokens.
+- Small batch sizes hurt contrastive negatives → consider a queue/memory bank if needed.
+- Imbalanced graph sizes → bucketed batching; cap neighbors in 3D graphs.
+
+Training knobs (initial):
+- d_model: 256–512; heads: 4–8; layers: 2–4 (per encoder); FFN: 4× d_model; dropout: 0.1.
+- Optimizer: AdamW; lr 1e-4–3e-4; wd 0.01; warmup; cosine decay.
+- Batch size: as large as fits; gradient accumulation if needed.
+
+
+Pocket Encoder (assuming pocket PDB already extracted)
+-----------------------------------------------
+
+Input: pocket PDB for a given protein target, extracted via fpocket (or equivalent) from the BLAST/ColabFold structure.
+
+1) Preprocess (already done... have pdb files of pockets)
+- BLAST protein sequences to get .PDB files
+- Extract and collect pockets using fpocket
+
+2) Build residue-level graph
+- Nodes: residues {type (20 aa one-hot), index offset from pocket center, optional DSSP (SS one-hot, RSA), optional B-factor stats if present}.
+- Node coords: R³ from chosen representative atom.
+- Edges: connect i↔j if distance ≤ r_edge (e.g., 10 Å) or via kNN (k=16–32). Store edge features:
+	- dist = ||xi − xj||, optionally RBF(dist) with K bins.
+	- (Optional) direction encodings: (xi − xj)/dist.
+
+3) Encoder options
+- Non-equivariant (fast, good baseline):
+	- Encode node feats with MLP.
+	- Message passing GNN with edge features (dist, RBF), 2–4 layers (e.g., GINE/MPNN + edge MLP).
+	- Positional bias from distances; no rotation invariance required if coords normalized locally.
+- Equivariant (more accurate, heavier):
+	- EGNN / SE(3)-Transformer / TorchMD-NET operating on nodes with coordinates; updates both features and coords.
+	- Typically 2–4 equivariant blocks with shared d_model; watch memory.
+
+4) Pooling and projection
+- Pool residue embeddings with [CLS] token or mean pooling over residues to get pocket vector z_pocket ∈ R^{d_model}.
+- Apply projection head g_pocket: ẑ_pocket = normalize(MLP(z_pocket)).
+
+5) Integration points
+- Contrastive: use ẑ_pocket instead of (or in addition to) full-protein representation in the InfoNCE loss against ligand vectors.
+- Cross-attention: treat residue embeddings as a token sequence. Do ligand→pocket cross-attention (and optionally pocket→ligand). Use masks for variable residue counts.
+
+6) Caching & fallbacks
+- Cache pocket graphs (nodes/edges/features) per protein to disk (e.g., JSON/pt) for fast loading.
+- If pocket extraction fails or structure is unreliable, fall back to sequence-only encoder for that sample.
+
+
+
+
+
+
+
+

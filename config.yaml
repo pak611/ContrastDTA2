@@ -1,0 +1,43 @@
+# Configuration for ContrastDTA2 demo/training
+# Values are grouped in sections, but the program will flatten them into CLI-style args.
+# You can override any of these at the command line if needed.
+
+paths:
+  dataset: BINDINGDB2016
+  # CSV with columns: Protein, Ligand (adjust if your columns differ)
+  input: /home/patrick/Desktop/ContrastDTA2/data/bindingdb2016/train_test_merged.csv
+
+  # Where to read/write processed tensors
+  processed_path: /home/patrick/Desktop/ContrastDTA2/data/processed_data/bindingdb2016_processed
+  processed_protein_path: /home/patrick/Desktop/ContrastDTA2/data/processed_data/bindingdb2016_processed/proteins/proteins.pt
+  processed_ligand_path:  /home/patrick/Desktop/ContrastDTA2/data/processed_data/bindingdb2016_processed/ligands/ligands.pt
+
+  # Folder with many pocket PDBs (use a single file path if running one-off)
+  processed_pocket_path: /home/patrick/Desktop/ContrastDTA2/data/processed_data/bindingdb2016_processed/pockets/pockets.pt
+
+  pocket_path: /home/patrick/Desktop/ContrastDTA2/data/bindingdb2016/pockets_by_sequence
+  protein_path: /home/patrick/Desktop/ContrastDTA2/data/bindingdb2016/proteins
+
+
+  # Where to write run outputs (logs/metrics/artifacts as you prefer)
+  output: /home/patrick/Desktop/ContrastDTA2/results/contrastive_bindingdb2016_run.csv
+
+training:
+  device: cuda               # cuda or cpu
+  batch_size: 5
+  epochs: 50
+  lr: 0.00005
+  log_interval: 50
+
+model:
+  # These are read into args for convenience; main.py currently hardcodes some values.
+  model_type: pocket
+  d_model: 240
+  n_heads: 4
+  gnn_layers: 1
+  tr_layers: 2
+  proj_dim: 128
+  temperature: 0.07
+  use_cross_attention: true
+
+# no contrast / grouped sampling in this config (reverted)
