@@ -11,8 +11,7 @@ import json
 
 from torch_geometric.loader import DataLoader  # <- PyG loader
 from utils.featurizer import (
-    featurize_proteins, featurize_ligands, build_pocket_graph_from_fpocket, featurize_pockets,
-    featurize_proteins_dgraph
+    featurize_proteins, featurize_ligands, build_pocket_graph_from_fpocket, featurize_pockets
 )
 from utils.dataset import PLDataset, PLDataset2  # pocket or protein variants
 from utils.train_test_split import add_split_column
@@ -31,9 +30,6 @@ parser.add_argument('--dataset', type=str)
 parser.add_argument('--input', type=str, required=False)
 parser.add_argument('--pocket_path', type=str, required=False)
 parser.add_argument('--protein_path', type=str, required=False)
-parser.add_argument('--protein_feature_mode', type=str, choices=['pdb','dgraph'], default='pdb', help='protein featurization mode')
-parser.add_argument('--contact_dir', type=str, required=False, help='dir containing pconsc4 .npy files (for dgraph mode)')
-parser.add_argument('--aln_dir', type=str, required=False, help='dir containing alignment .aln files (for dgraph mode)')
 parser.add_argument('--protein_key_col', type=str, default='ID', help='CSV column for protein key (for dgraph mode)')
 parser.add_argument('--protein_seq_col', type=str, default='ProteinSequence', help='CSV column for protein sequence (for dgraph mode)')
 # paths for cached features
@@ -75,32 +71,12 @@ def main() -> None:
         if os.path.exists(args.processed_protein_path):
             print("Loading cached protein graphs…")
             protein_data = torch.load(args.processed_protein_path, weights_only=False)
-        else:
-            if args.protein_feature_mode == 'pdb':
-                if not args.protein_path:
-                    raise ValueError("protein_path is required when model_type=protein (pdb) and no cached proteins found")
-                protein_dir = Path(args.protein_path)
-                pdb_files = sorted(str(p) for p in protein_dir.rglob("*.pdb"))
-                print(f"Featurizing {len(pdb_files)} proteins from: {protein_dir}")
-                protein_data = featurize_proteins(pdb_files, radius=8.0, num_workers=args.workers)
-                torch.save(protein_data, args.processed_protein_path)
-            else:  # dgraph mode
-                key_col = args.protein_key_col
-                seq_col = args.protein_seq_col
-                if key_col not in df.columns or seq_col not in df.columns:
-                    raise ValueError(f"CSV must contain columns '{key_col}' and '{seq_col}' for dgraph featurization")
-                if not args.contact_dir or not args.aln_dir:
-                    raise ValueError("contact_dir and aln_dir are required for dgraph featurization")
-                # use unique keys -> one sequence per key (take first occurrence)
-                key_to_seq = {}
-                for key, seq in zip(df[key_col].astype(str).tolist(), df[seq_col].astype(str).tolist()):
-                    if key not in key_to_seq:
-                        key_to_seq[key] = seq
-                keys = list(key_to_seq.keys())
-                seqs = [key_to_seq[k] for k in keys]
-                print(f"Featurizing {len(keys)} proteins (dgraph) from contact_dir={args.contact_dir}")
-                protein_data = featurize_proteins_dgraph(keys, seqs, args.contact_dir, args.aln_dir)
-                torch.save(protein_data, args.processed_protein_path)
+            protein_dir = Path(args.protein_path)
+            pdb_files = sorted(str(p) for p in protein_dir.rglob("*.pdb"))
+            print(f"Featurizing {len(pdb_files)} proteins from: {protein_dir}")
+            protein_data = featurize_proteins(pdb_files, radius=8.0, num_workers=args.workers)
+            torch.save(protein_data, args.processed_protein_path)
+
     else:
         protein_data = []
 
